@@ -5,7 +5,7 @@
  *   Stream Management
  *
  */
-#include <cuda/runtime_api.hpp>
+#include <cuda/api.hpp>
 
 #include <iostream>
 #include <vector>

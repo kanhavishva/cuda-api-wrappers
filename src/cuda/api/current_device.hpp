@@ -21,9 +21,9 @@
 #define CUDA_API_WRAPPERS_CURRENT_DEVICE_HPP_
 
 #include <cuda/api/constants.hpp>
-#include <cuda/api/error.hpp>
 #include <cuda/api/miscellany.hpp>
-#include <cuda/common/types.hpp>
+#include <cuda/api/current_context.hpp>
+#include <cuda/api/primary_context.hpp>
 
 #include <cuda_runtime_api.h>
 
@@ -54,6 +54,9 @@ inline id_t get_id()
  * Set a device as the current one for the CUDA Runtime API (so that API calls
  * not specifying a device apply to it.)
  *
+ * @note this replaces the current CUDA context (rather than pushing a context
+ * onto the stack), so use with care.
+ *
  * @param[in] device Numeric ID of the device to make current
  */
 inline void set(id_t device)
@@ -67,6 +70,9 @@ inline void set(id_t device)
  *
  * @param[in] device_ids Numeric IDs of the devices to try and make current, in order
  * @param[in] num_devices The number of device IDs pointed to by @device_ids
+ *
+ * @note this replaces the current CUDA context (rather than pushing a context
+ * onto the stack), so use with care.
  */
 inline void set(const id_t* device_ids, size_t num_devices)
 {
@@ -80,25 +86,30 @@ inline void set(const id_t* device_ids, size_t num_devices)
 
 /**
  * @note See the out-of-`detail::` version of this class.
+ *
+ * @note Perhaps it would be better to keep a copy of the current context ID in a member of this class?
+ *
+ * @note we have no guarantee that the context stack is not altered during
+ * the lifetime of this object; but - we assume it wasn't, and it's up to the users
+ * of this class to assure that's the case or face the consequences
+ *
+ * @note We don't want to use the context setter class as the implementation,
+ * since that would involve creating a primary context for the device, which
+ * we still want to avoid.
  */
-class scoped_override_t {
-protected:
-	static id_t  replace(id_t new_device_id)
-	{
-		id_t previous_device_id = device::current::detail::get_id();
-		device::current::detail::set(new_device_id);
-		return previous_device_id;
-	}
 
+class scoped_override_t {
 public:
-	scoped_override_t(id_t new_device_id) : previous_device_id(replace(new_device_id)) { }
-	~scoped_override_t() {
-		// Note that we have no guarantee that the current device was not
-		// already replaced while this object was in scope; but - that's life.
-		replace(previous_device_id);
+	scoped_override_t(id_t new_device_id) {
+		auto top_of_context_stack = context::current::detail::get_handle();
+		if (top_of_context_stack != context::current::detail::no_current_context) {
+			context::current::detail::push(top_of_context_stack); // Yes, we're pushing a copy of the same context
+		}
+		device::current::detail::set(new_device_id); // ... which now gets overwritten at the top of the stack
 	}
-private:
-	id_t  previous_device_id;
+	~scoped_override_t() {
+		context::current::detail::pop();
+	}
 };
 
 
@@ -112,15 +123,18 @@ inline void set_to_default() { return detail::set(device::default_device_id); }
 void set(device_t device);
 
 /**
- * A RAII-based mechanism for setting the CUDA Runtime API's current device for
+ * A RAII-like mechanism for setting the CUDA Runtime API's current device for
  * what remains of the current scope, and changing it back to its previous value
  * when exiting the scope.
+ *
+ * @note The description says "RAII-like" because the reality is more complex. The
+ * runtime API sets a device by overwriting the current
  */
 class scoped_override_t : private detail::scoped_override_t {
 protected:
 	using parent = detail::scoped_override_t;
 public:
-	scoped_override_t(device_t& device);
+	scoped_override_t(const device_t& device);
 	scoped_override_t(device_t&& device);
 	~scoped_override_t() = default;
 };

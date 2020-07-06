@@ -9,8 +9,73 @@
 #define CUDA_API_WRAPPERS_PEER_TO_PEER_HPP_
 
 #include <cuda/api/device.hpp>
+#include <cuda/api/context.hpp>
+#include <cuda/api/current_context.hpp>
+
+#include <string>
 
 namespace cuda {
+
+namespace context {
+
+namespace peer_to_peer {
+
+/**
+ * @brief Enable access by one CUDA device to the global memory of another
+ *
+ * @param accessor device interested in making a remote access
+ * @param peer device to be accessed
+ */
+inline void enable_access(const context_t& accessor, const context_t& peer)
+{
+    context::current::detail::scoped_override_t set_context_for_this_context(accessor.handle());
+    constexpr const unsigned flags { 0 };
+    auto result = cuCtxEnablePeerAccess(peer.handle(), flags);
+    throw_if_error(result, "Failed enabling access by CUDA context "
+        + cuda::detail::ptr_as_hex(accessor.handle()) + " on device " + std::to_string(accessor.device_id())
+        + "to  context " + cuda::detail::ptr_as_hex(peer.handle()) + " on device " + std::to_string(peer.device_id()));
+}
+
+/**
+ * @brief Disable access by one CUDA device to the global memory of another
+ *
+ * @param accessor device interested in making a remote access
+ * @param peer device to be accessed
+ */
+inline void disable_access(const context_t& accessor, const context_t& peer)
+{
+    context::current::detail::scoped_override_t set_context_for_this_context(accessor.handle());
+    auto status = cuCtxDisablePeerAccess(peer.handle());
+    throw_if_error(status,
+        "Failed disabling access by CUDA context "
+        + cuda::detail::ptr_as_hex(accessor.handle()) + " on device " + std::to_string(accessor.device_id())
+        + "to  context " + cuda::detail::ptr_as_hex(peer.handle()) + " on device " + std::to_string(peer.device_id()));
+}
+
+/**
+ * @brief Enable access both by the @p first to the @p second context and the other way around.
+ */
+inline void enable_bidirectional_access(const context_t& first, const context_t& second)
+{
+    // Note: What happens when first and second are the same context? Or on the same device?
+    enable_access(first,  second);
+    enable_access(second, first );
+}
+
+/**
+ * @brief Disable access both by the @p first to the @p second context and the other way around.
+ */
+inline void disable_bidirectional_access(const context_t& first, const context_t& second)
+{
+    // Note: What happens when first and second are the same context? Or on the same device?
+    disable_access(first,  second);
+    disable_access(second, first );
+}
+
+
+} // namespace peer_to_peer
+} // namespace context
+
 namespace device {
 namespace peer_to_peer {
 
@@ -18,6 +83,10 @@ namespace peer_to_peer {
  * @brief The value of type for all CUDA device "attributes"; see also @ref attribute_t.
  */
 using attribute_value_t = int;
+
+// TODO: Consider modifying the implementations here to use devices' primary contexts,
+// and with them - the context-based functions above. That will also help/harmonize future
+// relegation of device_t functionality to a device_t::primary_context()-obtained object.
 
 /**
  * @brief An identifier of a integral-numeric-value attribute of a CUDA device.
@@ -50,6 +119,8 @@ inline bool can_access(device_t accessor, device_t peer)
  *
  * @param accessor device interested in making a remote access
  * @param peer device to be accessed
+ *
+ * @todo Consider disabling this, given that access is context-specific
  */
 inline void enable_access(device_t accessor, device_t peer)
 {
@@ -61,6 +132,8 @@ inline void enable_access(device_t accessor, device_t peer)
  *
  * @param accessor device interested in making a remote access
  * @param peer device to be accessed
+ *
+ * @todo Consider disabling this, given that access is context-specific
  */
 inline void disable_access(device_t accessor, device_t peer)
 {

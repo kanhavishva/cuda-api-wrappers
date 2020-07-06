@@ -12,7 +12,7 @@
 
 #include "../helper_string.h"
 
-#include <cuda/runtime_api.hpp>
+#include <cuda/api.hpp>
 
 #include <stdio.h>
 #include <assert.h>

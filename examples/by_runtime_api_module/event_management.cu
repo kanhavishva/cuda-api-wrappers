@@ -5,7 +5,7 @@
  *   Event Management
  *
  */
-#include <cuda/runtime_api.hpp>
+#include <cuda/api.hpp>
 
 #include <cuda_runtime_api.h>
 
@@ -89,9 +89,10 @@ int main(int argc, char **argv)
 	// and memory attachments, recording and waiting on events
 	//--------------------------------------------------------------
 
-	auto stream = cuda::device::current::get().create_stream(
+	auto current_device = cuda::device::current::get();
+	auto stream = current_device.create_stream(
 		cuda::stream::no_implicit_synchronization_with_default_stream);
-	auto default_stream = cuda::device::current::get().default_stream();
+	auto default_stream = current_device.default_stream();
 
 	{ auto event = cuda::event::create(device); }
 	auto event_1 = cuda::event::create(
@@ -112,7 +113,7 @@ int main(int argc, char **argv)
 	constexpr size_t buffer_size = 12345678;
 	auto buffer = cuda::memory::managed::make_unique<char[]>(
 		buffer_size, cuda::memory::managed::initial_visibility_t::to_all_devices);
-	auto threads_per_block = cuda::kernel_t(device, increment).attributes().maxThreadsPerBlock;
+	auto threads_per_block = cuda::apriori_compiled_kernel_t(device, increment).attributes().maxThreadsPerBlock;
 	auto num_blocks = (buffer_size + threads_per_block - 1) / threads_per_block;
 	auto launch_config = cuda::make_launch_config(num_blocks, threads_per_block);
 

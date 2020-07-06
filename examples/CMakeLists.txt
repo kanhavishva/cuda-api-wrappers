@@ -39,12 +39,13 @@ set(CMAKE_CUDA_STANDARD 11)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
 
-link_libraries(runtime-api)
+link_libraries(runtime-and-driver)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "bin")
 add_executable(vectorAdd modified_cuda_samples/vectorAdd/vectorAdd.cu)
 add_executable(vectorAddMapped modified_cuda_samples/vectorAddMapped/vectorAddMapped.cu)
 add_executable(vectorAddManaged modified_cuda_samples/vectorAddManaged/vectorAddManaged.cu)
+add_executable(simpleDrvRuntimePTX modified_cuda_samples/simpleDrvRuntimePTX/simpleDrvRuntimePTX.cpp)
 add_executable(inlinePTX modified_cuda_samples/inlinePTX/inlinePTX.cu)
 add_executable(simpleStreams modified_cuda_samples/simpleStreams/simpleStreams.cu)
 add_executable(simpleIPC modified_cuda_samples/simpleIPC/simpleIPC.cu)
@@ -57,6 +58,7 @@ add_dependencies(modified_cuda_samples vectorAdd inlinePTX simpleStreams simpleI
 add_executable(version_management by_runtime_api_module/version_management.cpp)
 add_executable(error_handling by_runtime_api_module/error_handling.cu)
 add_executable(device_management by_runtime_api_module/device_management.cpp)
+add_executable(context_management by_driver_api_module/context_management.cpp)
 add_executable(execution_control by_runtime_api_module/execution_control.cu)
 
 add_executable(stream_management by_runtime_api_module/stream_management.cu)

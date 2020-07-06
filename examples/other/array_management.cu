@@ -1,11 +1,11 @@
-#include <cuda/runtime_api.hpp>
+#include <cuda/api.hpp>
 
 #include <iostream>
 #include <iomanip>
 #include <numeric>
 #include <limits>
 
-using std::size_t;
+using cuda::size_t;
 
 namespace kernels {
 
@@ -73,7 +73,7 @@ void array_3d_example(Device& device, size_t w, size_t h, size_t d) {
 	std::iota(ptr_in.get(), ptr_in.get() + arr.size(), 0);
 	auto ptr_out = cuda::memory::managed::make_unique<float[]>(arr.size());
 	cuda::memory::copy(arr, ptr_in.get());
-	cuda::texture_view tv(arr);
+	auto tv = cuda::texture::texture_view(arr);
 	constexpr cuda::grid::block_dimension_t block_dim = 10;
 	constexpr auto block_dims = cuda::grid::block_dimensions_t::cube(block_dim);
 	assert(div_rounding_up(w, block_dim) <= std::numeric_limits<grid::dimension_t>::max());
@@ -87,7 +87,7 @@ void array_3d_example(Device& device, size_t w, size_t h, size_t d) {
 	cuda::launch(
 		kernels::from_3D_texture_to_memory_space,
 		cuda::make_launch_config(grid_dims, block_dims),
-		tv.raw_handle(), ptr_out.get(), w, h, d);
+		tv.handle(), ptr_out.get(), w, h, d);
 	device.synchronize();
 	check_output_is_iota("copy from 3D texture into (managed) global memory", ptr_out.get(), arr.size());
 
@@ -133,7 +133,7 @@ void array_2d_example(Device& device, size_t w, size_t h)
 	print_2d_array(ptr_in.get(), w, h);
 
 	cuda::memory::copy(arr, ptr_in.get());
-	cuda::texture_view tv(arr);
+	auto tv = cuda::texture::texture_view(arr);
 
 	constexpr cuda::grid::block_dimension_t block_dim = 10;
 	constexpr auto block_dims = cuda::grid::block_dimensions_t::square(block_dim);
@@ -148,7 +148,7 @@ void array_2d_example(Device& device, size_t w, size_t h)
 	cuda::launch(
 		kernels::from_2D_texture_to_memory_space,
 		cuda::make_launch_config(grid_dims, block_dims),
-		tv.raw_handle(), ptr_out.get(), w, h);
+		tv.handle(), ptr_out.get(), w, h);
 	cuda::memory::copy(ptr_out.get(), arr);
 	device.synchronize();
 	print_2d_array(ptr_out.get(), w, h);

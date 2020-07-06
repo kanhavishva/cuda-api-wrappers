@@ -16,7 +16,14 @@
 #include <cuda/api/pointer.hpp>
 #include <cuda/api/stream.hpp>
 #include <cuda/api/unique_ptr.hpp>
+#include <cuda/api/primary_context.hpp>
+#include <cuda/api/apriori_compiled_kernel.hpp>
+#include <cuda/api/module.hpp>
+#include <cuda/api/virtual_memory.hpp>
+#include <cuda/api/current_context.hpp>
+
 #include <cuda_runtime.h>
+#include <cuda.h>
 
 #include <type_traits>
 #include <vector>
@@ -49,15 +56,23 @@ inline cudaArray* allocate(device_t& device, array::dimensions_t<2> dimensions)
 namespace event {
 
 inline event_t create(
+	const context_t&  context,
+	bool       uses_blocking_sync,
+	bool       records_timing,
+	bool       interprocess)
+{
+	// Yes, we need the ID explicitly even on the current device,
+	// because event_t's don't have an implicit device ID.
+	return event::detail::create(context.handle(), uses_blocking_sync, records_timing, interprocess);
+}
+
+inline event_t create(
 	device_t&  device,
 	bool       uses_blocking_sync,
 	bool       records_timing,
 	bool       interprocess)
 {
-	auto device_id = device.id();
-		// Yes, we need the ID explicitly even on the current device,
-		// because event_t's don't have an implicit device ID.
-	return event::detail::create(device_id , uses_blocking_sync, records_timing, interprocess);
+	return create(device.primary_context(), uses_blocking_sync, records_timing, interprocess);
 }
 
 namespace ipc {
@@ -67,9 +82,16 @@ inline handle_t export_(event_t& event)
 	return detail::export_(event.id());
 }
 
-inline event_t import(device_t& device, const handle_t& handle)
+inline event_t import(const context_t& context, const handle_t& event_ipc_handle)
 {
-	return event::detail::wrap(device.id(), detail::import(handle), do_not_take_ownership);
+	bool do_not_take_ownership { false };
+	return event::detail::wrap(context.handle(), detail::import(event_ipc_handle), do_not_take_ownership);
+}
+
+
+inline event_t import(const device_t& device, const handle_t& event_ipc_handle)
+{
+	return import(device.primary_context(), event_ipc_handle);
 }
 
 } // namespace ipc
@@ -79,9 +101,14 @@ inline event_t import(device_t& device, const handle_t& handle)
 
 // device_t methods
 
+inline device::primary_context_t device_t::primary_context() const
+{
+	return device::primary_context::get(*this);
+}
+
 inline stream_t device_t::default_stream() const noexcept
 {
-	return stream::detail::wrap(id(), stream::default_stream_id);
+	return stream::detail::wrap(id(), primary_context().handle(), stream::default_stream_id);
 }
 
 inline stream_t
@@ -89,15 +116,45 @@ device_t::create_stream(
 	bool                will_synchronize_with_default_stream,
 	stream::priority_t  priority)
 {
-	device::current::detail::scoped_override_t set_device_for_this_scope(id_);
-	return stream::detail::wrap(id(), stream::detail::create_on_current_device(
-		will_synchronize_with_default_stream, priority), do_take_ownership);
+	auto pc = primary_context();
+	return stream::detail::create(id(), pc.handle(), will_synchronize_with_default_stream, priority);
+}
+
+inline bool context_t::is_primary() const
+{
+	return handle_ == device::primary_context::detail::get_id(device_id_);
+}
+
+inline device_t context_t::device() const
+{
+	return device::detail::wrap(device_id_);
+}
+
+
+inline stream_t context_t::default_stream() const noexcept
+{
+	return stream::detail::wrap(device_id_, handle_, stream::default_stream_id);
 }
 
 namespace device {
+namespace primary_context {
+
+inline void destroy(const device_t& device)
+{
+	auto status = cuDevicePrimaryCtxReset(device.id());
+	throw_if_error(status, "Failed destroying/resetting the primary context of device " + std::to_string(device.id()));
+}
+
+inline primary_context_t get(const device_t& device)
+{
+	return detail::wrap(device.id(), detail::obtain_and_increase_refcount(device.id()));
+}
+
+} // namespace primary_context
+
 namespace current {
 
-inline scoped_override_t::scoped_override_t(device_t& device) : parent(device.id()) { }
+inline scoped_override_t::scoped_override_t(const device_t& device) : parent(device.id()) { }
 inline scoped_override_t::scoped_override_t(device_t&& device) : parent(device.id()) { }
 
 } // namespace current
@@ -130,16 +187,29 @@ inline event_t device_t::create_event(
 
 // event_t methods
 
+
+inline device::id_t event_t::device_id() const noexcept
+{
+	return context::detail::get_device_id(context_handle_);
+}
+
 inline device_t event_t::device() const noexcept
 {
-	return cuda::device::get(device_id_);
+	return cuda::device::get(device_id());
 }
+
+inline context_t event_t::context() const noexcept
+{
+	constexpr const bool dont_take_ownership { false };
+	return context::detail::wrap(device_id(), context_handle_, dont_take_ownership);
+}
+
+
 
 inline void event_t::record(const stream_t& stream)
 {
 	// Note:
-	// TODO: Perhaps check the device ID here, rather than
-	// have the Runtime API call fail?
+	// TODO: Perhaps check the context match here, rather than have the Runtime API call fail?
 	event::detail::enqueue(stream.id(), id_);
 }
 
@@ -149,12 +219,17 @@ inline void event_t::fire(const stream_t& stream)
 	stream.synchronize();
 }
 
-
 // stream_t methods
 
 inline device_t stream_t::device() const noexcept
 {
-	return cuda::device::get(device_id_);
+	return cuda::device::detail::wrap(device_id_);
+}
+
+inline context_t stream_t::context() const noexcept
+{
+	constexpr const bool dont_take_ownership { false };
+	return context::detail::wrap(device_id_, context_handle_, dont_take_ownership);
 }
 
 inline void stream_t::enqueue_t::wait(const event_t& event_)
@@ -169,6 +244,7 @@ inline void stream_t::enqueue_t::wait(const event_t& event_)
 	throw_if_error(status,
 		std::string("Failed scheduling a wait for event ") + cuda::detail::ptr_as_hex(event_.id())
 		+ " on stream " + cuda::detail::ptr_as_hex(associated_stream.id_)
+		+ " in context " + cuda::detail::ptr_as_hex(associated_stream.context_handle_)
 		+ " on CUDA device " + std::to_string(device_id));
 
 }
@@ -176,13 +252,18 @@ inline void stream_t::enqueue_t::wait(const event_t& event_)
 inline event_t& stream_t::enqueue_t::event(event_t& existing_event)
 {
 	auto device_id = associated_stream.device_id_;
-	if (existing_event.device_id() != device_id) {
-		throw std::invalid_argument("Attempt to enqueue a CUDA event associated with device "
-			+ std::to_string(existing_event.device_id()) + " to be triggered by a stream on CUDA device "
-			+ std::to_string(device_id ) );
+	auto context_handle = associated_stream.context_handle_;
+	auto stream_context_handle_ = associated_stream.context_handle_;
+	if (existing_event.context_handle() != stream_context_handle_) {
+		throw std::invalid_argument("Attempt to enqueue a CUDA event associated with context "
+			+ detail::ptr_as_hex(existing_event.context_handle()) 
+            + " on device " + std::to_string(existing_event.device_id())
+			+ " to be triggered by a stream in CUDA context "
+			+ detail::ptr_as_hex(associated_stream.context_handle_) 
+	        + " on CUDA device " + std::to_string(device_id ) );
 	}
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id);
-	stream::detail::record_event_on_current_device(device_id, associated_stream.id_, existing_event.id());
+	context::current::detail::scoped_override_t set_context_for_this_scope(context_handle);
+	stream::detail::record_event_in_current_context(device_id, context_handle, associated_stream.id_, existing_event.id());
 	return existing_event;
 }
 
@@ -191,12 +272,12 @@ inline event_t stream_t::enqueue_t::event(
     bool          records_timing,
     bool          interprocess)
 {
-	auto device_id = associated_stream.device_id_;
-	device::current::detail::scoped_override_t set_device_for_this_scope(device_id);
+	auto context_handle_ = associated_stream.context_handle_;
+	context::current::detail::scoped_override_t set_context_for_this_scope(context_handle_);
 
-	event_t ev { event::detail::create_on_current_device(device_id, uses_blocking_sync, records_timing, interprocess) };
+	event_t ev { event::detail::create_in_current_context(context_handle_, uses_blocking_sync, records_timing, interprocess) };
 	// Note that, at this point, the event is not associated with this enqueue object's stream.
-	stream::detail::record_event_on_current_device(device_id, associated_stream.id_, ev.id());
+	this->event(ev);
 	return ev;
 }
 
@@ -215,9 +296,14 @@ inline void copy(void *destination, const void *source, size_t num_bytes, const 
 	detail::copy(destination, source, num_bytes, stream.id());
 }
 
+inline void copy(void* destination, const_region_t source, const stream_t& stream)
+{
+	copy(destination, source.start(), source.size(), stream);
+}
+
 inline void copy(region_t destination, const_region_t source, const stream_t& stream)
 {
-	detail::copy(destination, source, stream.id());
+	copy(destination.start(), source, stream);
 }
 
 template <typename T, dimensionality_t NumDimensions>
@@ -251,7 +337,7 @@ namespace async {
 
 inline region_t allocate(const stream_t& stream, size_t size_in_bytes)
 {
-	return detail::allocate(stream.device().id(), stream.id(), size_in_bytes);
+	return detail::allocate(stream.context().handle(), stream.id(), size_in_bytes);
 }
 
 inline void set(void* start, int byte_value, size_t num_bytes, const stream_t& stream)
@@ -265,6 +351,39 @@ inline void zero(void* start, size_t num_bytes, const stream_t& stream)
 }
 
 } // namespace async
+
+namespace peer_to_peer {
+
+inline void copy(
+    void *             destination_address,
+    const context_t&   destination_context,
+    const void *       source_address,
+    const context_t&   source_context,
+    size_t             num_bytes)
+{
+    return detail::copy(
+        destination_address, destination_context.handle(),
+        source_address, source_context.handle(), num_bytes);
+}
+
+namespace async {
+
+inline void copy(
+	const stream_t&    stream,
+    void *             destination_address,
+    const context_t&   destination_context,
+    const void *       source_address,
+    const context_t&   source_context,
+    size_t             num_bytes)
+{
+    return detail::copy(
+        stream.id(), destination_address, destination_context.handle(), source_address,
+        source_context.handle(), num_bytes);
+}
+
+} // namespace async
+
+} // namespace peer_to_peer
 
 /**
  * @brief Create a variant of std::unique_pointer for an array in
@@ -299,6 +418,7 @@ inline unique_ptr<T> make_unique(device_t device)
 	cuda::device::current::detail::scoped_override_t set_device_for_this_scope(device.id());
 	return cuda::memory::detail::make_unique<T, detail::allocator, detail::deleter>();
 }
+
 
 } // namespace device
 
@@ -393,33 +513,24 @@ inline region_pair allocate(
 
 // kernel_t methods
 
-inline void kernel_t::set_attribute(cudaFuncAttribute attribute, int value)
+inline const context_t kernel_t::context() const noexcept
 {
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id_);
-	auto result = cudaFuncSetAttribute(ptr_, attribute, value);
-	throw_if_error(result, "Setting CUDA device function attribute " + std::to_string(attribute) + " to value " + std::to_string(value));
+	constexpr bool dont_take_ownership { false };
+	return context::detail::from_handle(context_handle_, dont_take_ownership);
 }
 
-inline void kernel_t::opt_in_to_extra_dynamic_memory(cuda::memory::shared::size_t amount_required_by_kernel)
+inline const device_t kernel_t::device() const noexcept
 {
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id_);
-#if CUDART_VERSION >= 9000
-	auto result = cudaFuncSetAttribute(ptr_, cudaFuncAttributeMaxDynamicSharedMemorySize, amount_required_by_kernel);
-	throw_if_error(result,
-		"Trying to opt-in to " + std::to_string(amount_required_by_kernel) + " bytes of dynamic shared memory, "
-		"exceeding the maximum available on device " + std::to_string(device_id_) + " (consider the amount of static shared memory"
-		"in use by the function).");
-#else
-	throw(cuda::runtime_error {cuda::status::not_yet_implemented});
-#endif
+	return device::detail::wrap(context::detail::get_device_id(context_handle_));
 }
 
 #if defined(__CUDACC__)
 // Unfortunately, the CUDA runtime API does not allow for computation of the grid parameters for maximum occupancy
 // from code compiled with a host-side-only compiler! See cuda_runtime.h for details
 
+
 inline std::pair<grid::dimension_t, grid::block_dimension_t>
-kernel_t::min_grid_params_for_max_occupancy(
+apriori_compiled_kernel_t::min_grid_params_for_max_occupancy(
 	memory::shared::size_t   dynamic_shared_memory_size,
 	grid::block_dimension_t  block_size_limit,
 	bool                     disable_caching_override)
@@ -437,14 +548,14 @@ kernel_t::min_grid_params_for_max_occupancy(
 		);
 	throw_if_error(result,
 		"Failed obtaining parameters for a minimum-size grid for kernel " + detail::ptr_as_hex(ptr_) +
-		" on device " + std::to_string(device_id_) + ".");
+		" in context " + detail::ptr_as_hex(context_handle_) + ".");
 	return { min_grid_size_in_blocks, block_size };
 #endif
 }
 
 template <typename UnaryFunction>
 std::pair<grid::dimension_t, grid::block_dimension_t>
-kernel_t::min_grid_params_for_max_occupancy(
+apriori_compiled_kernel_t::min_grid_params_for_max_occupancy(
 	UnaryFunction            block_size_to_dynamic_shared_mem_size,
 	grid::block_dimension_t  block_size_limit,
 	bool                     disable_caching_override)
@@ -462,18 +573,18 @@ kernel_t::min_grid_params_for_max_occupancy(
 		);
 	throw_if_error(result,
 		"Failed obtaining parameters for a minimum-size grid for kernel " + detail::ptr_as_hex(ptr_) +
-		" on device " + std::to_string(device_id_) + ".");
+		" in context " + detail::ptr_as_hex(context_handle_) + ".");
 	return { min_grid_size_in_blocks, block_size };
 #endif
 }
 #endif
 
-inline void kernel_t::set_preferred_shared_mem_fraction(unsigned shared_mem_percentage)
+inline void apriori_compiled_kernel_t::set_preferred_shared_mem_fraction(unsigned shared_mem_percentage)
 {
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id_);
 	if (shared_mem_percentage > 100) {
 		throw std::invalid_argument("Percentage value can't exceed 100");
 	}
+	context::current::detail::scoped_override_t set_context_for_this_scope(context_handle_);
 #if CUDART_VERSION >= 9000
 	auto result = cudaFuncSetAttribute(ptr_, cudaFuncAttributePreferredSharedMemoryCarveout, shared_mem_percentage);
 	throw_if_error(result, "Trying to set the carve-out of shared memory/L1 cache memory");
@@ -482,109 +593,95 @@ inline void kernel_t::set_preferred_shared_mem_fraction(unsigned shared_mem_perc
 #endif
 }
 
-inline kernel::attributes_t kernel_t::attributes() const
-{
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id_);
-	kernel::attributes_t function_attributes;
-	auto status = cudaFuncGetAttributes(&function_attributes, ptr_);
-	throw_if_error(status, "Failed obtaining attributes for a CUDA device function");
-	return function_attributes;
-}
-
-inline void kernel_t::set_cache_preference(multiprocessor_cache_preference_t  preference)
-{
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id_);
-	auto result = cudaFuncSetCacheConfig(ptr_, (cudaFuncCache) preference);
-	throw_if_error(result,
-		"Setting the multiprocessor L1/Shared Memory cache distribution preference for a "
-		"CUDA device function");
-}
-
-
-inline void kernel_t::set_shared_memory_bank_size(
-	multiprocessor_shared_memory_bank_size_option_t  config)
-{
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id_);
-	auto result = cudaFuncSetSharedMemConfig(ptr_, (cudaSharedMemConfig) config);
-	throw_if_error(result);
-}
-
-inline grid::dimension_t kernel_t::maximum_active_blocks_per_multiprocessor(
-	grid::block_dimension_t   num_threads_per_block,
-	memory::shared::size_t    dynamic_shared_memory_per_block,
-	bool                      disable_caching_override)
-{
-	device::current::detail::scoped_override_t set_device_for_this_context(device_id_);
-	int result;
-	unsigned int flags = disable_caching_override ?
-		cudaOccupancyDisableCachingOverride : cudaOccupancyDefault;
-	auto status = cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(
-		&result, ptr_, num_threads_per_block,
-		dynamic_shared_memory_per_block, flags);
-	throw_if_error(status, "Failed calculating the maximum occupancy "
-		"of device function blocks per multiprocessor");
-	return result;
-}
-
-
-template <typename DeviceFunction>
-kernel_t::kernel_t(const device_t& device, DeviceFunction f, bool thread_block_cooperation)
-: kernel_t(device.id(), reinterpret_cast<const void*>(f), thread_block_cooperation) { }
-
 namespace stream {
-
-inline stream_t create(
-	device_t    device,
-	bool        synchronizes_with_default_stream,
-	priority_t  priority)
-{
-	return detail::create(device.id(), synchronizes_with_default_stream, priority);
-}
 
 namespace detail {
 
-inline void record_event_on_current_device(device::id_t device_id, stream::id_t stream_id, event::id_t event_id)
+inline device::id_t device_id_of(stream::id_t stream_id)
 {
-	auto status = cudaEventRecord(event_id, stream_id);
-	throw_if_error(status,
-		"Failed scheduling event " + cuda::detail::ptr_as_hex(event_id) + " to occur"
-		+ " on stream " + cuda::detail::ptr_as_hex(stream_id)
-		+ " on CUDA device " + std::to_string(device_id));
+	return context::detail::get_device_id(context_handle_of(stream_id));
 }
+
+inline void record_event_in_current_context(
+	device::id_t       current_device_id,
+	context::handle_t  current_context_handle_,
+	stream::id_t       stream_id,
+	event::id_t        event_id)
+{
+	auto status = cuEventRecord(event_id, stream_id);
+	throw_if_error(status,
+		   "Failed scheduling event " + cuda::detail::ptr_as_hex(event_id) + " to occur"
+		   + " on stream " + cuda::detail::ptr_as_hex(stream_id)
+		   + " in CUDA context " + cuda::detail::ptr_as_hex(current_context_handle_)
+		   + " on CUDA device" + std::to_string(current_device_id));
+}
+
 } // namespace detail
+
+inline stream_t create(
+	context_t    context,
+	bool         synchronizes_with_default_stream,
+	priority_t   priority)
+{
+	return detail::create(context.device_id(), context.handle(), synchronizes_with_default_stream, priority);
+}
+
+inline stream_t create(
+	device_t     device,
+	bool         synchronizes_with_default_stream,
+	priority_t   priority)
+{
+	return detail::create(device.id(), device.primary_context().handle(), synchronizes_with_default_stream, priority);
+}
 
 } // namespace stream
 
-template<typename Kernel, typename... KernelParameters>
-inline void enqueue_launch(
+template<typename RawKernel, typename... KernelParameters>
+void enqueue_launch(
 	bool                    thread_block_cooperation,
-	Kernel                  kernel_function,
+	RawKernel               kernel_function,
 	const stream_t&         stream,
 	launch_configuration_t  launch_configuration,
 	KernelParameters&&...   parameters)
 {
-	auto unwrapped_kernel_function =
-		kernel::unwrap<
-			Kernel,
-			detail::kernel_parameter_decay_t<KernelParameters>...
-		>(kernel_function);
-		// Note: This helper function is necessary since we may have gotten a
-		// kernel_t as Kernel, which is type-erased - in
-		// which case we need both to obtain the raw function pointer, and determine
-		// its type, i.e. un-type-erase it. Luckily, we have the KernelParameters pack
-		// which - if we can trust the user - contains more-or-less the function's
-		// parameter types; and kernels return `void`, which settles the whole signature.
-		//
-		// I say "more or less" because the KernelParameter pack may contain some
-		// references, arrays and so on - which CUDA kernels cannot accept; so
-		// we massage those a bit.
-
-#ifdef DEBUG
-	assert(thread_block_cooperation == detail::intrinsic_block_cooperation_value,
-		"mismatched indications of whether thread block should be able to cooperate for a kernel");
-#endif
+	static_assert(std::is_function<RawKernel>::value or detail::is_function_ptr<RawKernel>::value,
+		"Only a bona fide function can be a CUDA kernel and be launched with this function; "
+		"you were attempting to enqueue a launch of something other than a function");
+	static_assert(
+		cuda::detail::all_true<
+			std::is_trivially_copyable<typename std::decay<KernelParameters>::type>::value...
+		>::value,
+		"All kernel parameter types must be of a trivially copyable (decayed) type." );
 	detail::enqueue_launch(
 		thread_block_cooperation,
+		kernel_function,
+		stream.id(),
+		launch_configuration,
+		std::forward<KernelParameters>(parameters)...);
+}
+
+namespace detail {
+
+template<typename... KernelParameters>
+void enqueue_launch_helper<apriori_compiled_kernel_t, KernelParameters...>::operator()(
+		apriori_compiled_kernel_t  wrapped_kernel,
+		const stream_t &           stream,
+		launch_configuration_t     launch_configuration,
+		KernelParameters &&...     parameters)
+{
+	using raw_kernel_t = typename kernel::detail::raw_kernel_typegen<KernelParameters ...>::type;
+	auto unwrapped_kernel_function = reinterpret_cast<raw_kernel_t>(const_cast<void *>(wrapped_kernel.ptr()));
+	// Notes:
+	// 1. The inner cast here is because we store the pointer as const void* - as an extra
+	//    precaution against anybody trying to write through it. Now, function pointers
+	//    can't get written through, but are still for some reason not considered const.
+	// 2. We rely on the caller providing us with more-or-less the correct parameters -
+	//    corresponding to the compiled kernel function's. I say "more or less" because the
+	//    `KernelParameter` pack may contain some references, arrays and so on - which CUDA
+	//    kernels cannot accept; so we massage those a bit.
+
+	detail::enqueue_launch(
+		wrapped_kernel.thread_block_cooperation(),
 		unwrapped_kernel_function,
 		stream.id(),
 		launch_configuration,
@@ -592,20 +689,180 @@ inline void enqueue_launch(
 }
 
 template<typename Kernel, typename... KernelParameters>
+void enqueue_launch_helper<Kernel, KernelParameters...>::operator()(
+	Kernel                  kernel_function,
+	const stream_t&         stream,
+	launch_configuration_t  launch_configuration,
+	KernelParameters &&...  parameters)
+{
+	static_assert(std::is_function<Kernel>::value or (is_function_ptr<Kernel>::value),
+		"No appropriate specialization exists for the type of object passed as the kernel.");
+	detail::enqueue_launch(
+		thread_blocks_may_not_cooperate,
+		kernel_function,
+		stream.id(),
+		launch_configuration,
+		std::forward<KernelParameters>(parameters)...
+	);
+}
+
+} // namespace detail
+
+namespace memory {
+namespace virtual_ {
+namespace allocation {
+
+inline device_t properties_t::device() const
+{
+	return cuda::device::detail::wrap(raw.location.id);
+}
+
+} // namespace allocation
+
+inline void set_access_mode(
+	region_t fully_mapped_region,
+	access_mode_t access_mode,
+	const device_t& device)
+{
+	CUmemAccessDesc desc { { CU_MEM_LOCATION_TYPE_DEVICE, device.id() }, CUmemAccess_flags(access_mode) };
+	constexpr const size_t count { 1 };
+	auto result = cuMemSetAccess(fully_mapped_region.device_ptr(), fully_mapped_region.size(), &desc, count);
+	throw_if_error(result, "Failed setting the access mode to the virtual memory mapping to the range of size "
+		+ std::to_string(fully_mapped_region.size()) + " bytes at " + cuda::detail::ptr_as_hex(fully_mapped_region.data()));
+}
+
+inline void mapping_t::set_access_mode(access_mode_t access_mode, const device_t& device) const
+{
+	virtual_::set_access_mode(region_, access_mode, device);
+}
+
+inline access_mode_t mapping_t::get_access_mode(const device_t& device) const
+{
+	CUmemLocation_st location { CU_MEM_LOCATION_TYPE_DEVICE, device.id() };
+	unsigned long long flags;
+	auto result = cuMemGetAccess(&flags, &location, region_.device_ptr() );
+	throw_if_error(result, "Failed determining the access mode for device " + std::to_string(device.id())
+						   + " to the virtual memory mapping to the range of size "
+						   + std::to_string(region_.size()) + " bytes at " + cuda::detail::ptr_as_hex(region_.data()));
+	return access_mode_t(flags);
+}
+
+} // namespace virtual_
+} // namespace memory
+
+namespace context {
+
+namespace current {
+
+namespace detail {
+
+inline handle_t push_default_if_missing()
+{
+	auto handle = detail::get_handle();
+	if (handle != detail::no_current_context) {
+		return handle;
+	}
+	auto current_device_id = device::current::detail::get_id();
+	auto pc_handle = device::primary_context::detail::obtain_and_increase_refcount(current_device_id);
+	push(pc_handle);
+	return pc_handle;
+}
+
+/**
+ * @note This specialized scope setter is used in API calls which aren't provided a context
+ * as a parameter, and when there is no context that's current. Such API calls are necessarily
+ * device-related (i.e. runtime-API-ish), and since there is always a current device, we can
+ * (and in fact must) fall back on that device's primary context as what the user assumes we
+ * would use.
+ */
+class scoped_current_device_fallback_t : scoped_override_t {
+protected:
+public:
+	explicit scoped_current_device_fallback_t() :
+		scoped_override_t(
+			device::primary_context::detail::obtain_and_increase_refcount(device::current::detail::get_id())
+		) { }
+	~scoped_current_device_fallback_t() = default;
+};
+
+
+} // namespace detail
+
+inline scoped_override_t::scoped_override_t(const context_t& context) : parent(context.handle()) { }
+inline scoped_override_t::scoped_override_t(context_t&& context) : parent(context.handle()) { }
+
+} // namespace current
+
+inline context_t create_and_push(
+	const device_t&                        device,
+	host_thread_synch_scheduling_policy_t  synch_scheduling_policy,
+	bool                                   keep_larger_local_mem_after_resize,
+	bool                                   allow_pinned_mapped_memory_allocation)
+{
+	return detail::create_and_push(device.id(), synch_scheduling_policy, keep_larger_local_mem_after_resize, allow_pinned_mapped_memory_allocation);
+}
+
+inline context_t create(
+	const device_t&                        device,
+	host_thread_synch_scheduling_policy_t  synch_scheduling_policy,
+	bool                                   keep_larger_local_mem_after_resize,
+	bool                                   allow_pinned_mapped_memory_allocation)
+{
+	auto created = detail::create_and_push(device.id(), synch_scheduling_policy, keep_larger_local_mem_after_resize, allow_pinned_mapped_memory_allocation);
+	current::pop();
+	return created;
+}
+
+} // namespace context
+
+template<typename Kernel, typename... KernelParameters>
 inline void launch(
 	Kernel                  kernel_function,
 	launch_configuration_t  launch_configuration,
 	KernelParameters&&...   parameters)
 {
-	stream_t stream = device::current::get().default_stream();
-	enqueue_launch(
-		kernel_function,
-		stream,
-		launch_configuration,
-		std::forward<KernelParameters>(parameters)...);
+	if (context::current::exists()) {
+		stream_t stream = context::current::get().default_stream();
+		enqueue_launch(kernel_function, stream, launch_configuration, std::forward<KernelParameters>(parameters)...);
+	}
+	else {
+		context::current::detail::scoped_current_device_fallback_t context_for_current_scope;
+		stream_t stream = context::current::get().default_stream();
+		enqueue_launch(kernel_function, stream, launch_configuration, std::forward<KernelParameters>(parameters)...);
+	}
 }
 
+namespace memory {
+
+template <typename T>
+T* pointer_t<T>::get_for_device() const
+{
+	context::current::detail::scoped_current_device_fallback_t ensure_we_have_some_context;
+	CUdeviceptr device_side_address;
+	auto status = cuPointerGetAttribute (&device_side_address, CU_POINTER_ATTRIBUTE_DEVICE_POINTER, memory::device::address(ptr_));
+	throw_if_error(status, "Failed obtaining the device-side pointer for pointer value " + cuda::detail::ptr_as_hex(ptr_));
+	return reinterpret_cast<T*>(device_side_address);
+}
+
+template <typename T>
+T* pointer_t<T>::get_for_host() const
+{
+	context::current::detail::scoped_current_device_fallback_t ensure_we_have_some_context;
+	CUdeviceptr host_side_address;
+	auto status = cuPointerGetAttribute (&host_side_address, CU_POINTER_ATTRIBUTE_HOST_POINTER, memory::device::address(ptr_));
+	throw_if_error(status, "Failed obtaining the host-side pointer for pointer value " + cuda::detail::ptr_as_hex(ptr_));
+	return reinterpret_cast<T*>(host_side_address);
+}
+
+} // namespace memory
+
+// module_t methods
+
+inline context_t module_t::context() const { return context::detail::from_handle(context_handle_); }
+inline device_t module_t::device() const { return device::get(context::detail::get_device_id(context_handle_)); }
+
 } // namespace cuda
+
 
 #endif // MULTI_WRAPPER_IMPLS_HPP_
 

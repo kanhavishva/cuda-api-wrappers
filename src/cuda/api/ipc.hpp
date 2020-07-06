@@ -23,13 +23,13 @@
 #ifndef CUDA_API_WRAPPERS_IPC_HPP_
 #define CUDA_API_WRAPPERS_IPC_HPP_
 
-#include <cuda/api/device.hpp>
-#include <cuda/api/error.hpp>
-#include <cuda/common/types.hpp>
+#include <cuda/api/types.hpp>
 
 #include <cuda_runtime_api.h>
 
 #include <string>
+#include <cuda/api/device.hpp>
+#include <cuda/api/error.hpp>
 
 namespace cuda {
 
@@ -198,10 +198,19 @@ inline handle_t export_(event_t& event);
  * from an event handle (or otherwise - have a handle provide both an event ID and
  * a device ID), but that is not currently the case.
  *
- * @param device the device to which the imported event corresponds
- * @param handle the handle obtained via inter-process communications
+ * @param event_ipc_handle the handle obtained via inter-process communications
  */
-inline event_t import(device_t& device, const handle_t& handle);
+///@{
+ /**
+  * @param device the device with which the imported event is associated
+  */
+inline event_t import(const device_t& device, const handle_t& event_ipc_handle);
+
+/**
+ * @param context the device-context with which the imported event is associated
+ */
+inline event_t import(const context_t& device, const handle_t& event_ipc_handle);
+///@}
 
 } // namespace ipc
 } // namespace event

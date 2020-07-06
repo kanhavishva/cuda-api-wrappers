@@ -115,7 +115,7 @@ void enqueue_p2p_copy(
     P2PEngine p2p_mechanism,
     cuda::stream_t& stream)
 {
-    auto copy_kernel = cuda::kernel_t(stream.device(), copyp2p);
+    auto copy_kernel = cuda::apriori_compiled_kernel_t(stream.device(), copyp2p);
     auto params = copy_kernel.min_grid_params_for_max_occupancy();
     auto launch_config = cuda::make_launch_config(params.first, params.second);
 

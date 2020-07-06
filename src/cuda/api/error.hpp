@@ -1,17 +1,21 @@
 /**
  * @file error.hpp
  *
- * @brief Facilities for exception-based handling of Runtime API
- * errors, including a basic exception class wrapping
- * `std::runtime_error`.
+ * @brief Facilities for exception-based handling of Runtime
+ * and Driver API errors, including a basic exception class
+ * wrapping `std::runtime_error`.
+ *
+ * @note Does not - for now - support wrapping errors generated
+ * by other CUDA-related libraries like NVRTC.
  */
 #pragma once
 #ifndef CUDA_API_WRAPPERS_ERROR_HPP_
 #define CUDA_API_WRAPPERS_ERROR_HPP_
 
-#include <cuda/common/types.hpp>
-
+#include <cuda/api/types.hpp>
 #include <cuda_runtime_api.h>
+#include <cuda.h>
+
 #include <type_traits>
 #include <string>
 #include <stdexcept>
@@ -28,8 +32,13 @@ namespace status {
 enum named_t : std::underlying_type<status_t>::type {
 	success                         = cudaSuccess,
 	missing_configuration           = cudaErrorMissingConfiguration,
-	memory_allocation               = cudaErrorMemoryAllocation,
-	initialization_error            = cudaErrorInitializationError,
+	memory_allocation_failure       = cudaErrorMemoryAllocation, // == CUDA_ERROR_OUT_OF_MEMORY
+	initialization_error            = cudaErrorInitializationError, // == CUDA_ERROR_NOT_INITIALIZED
+	already_deinitialized           = cudaErrorCudartUnloading, // == CUDA_ERROR_DEINITIALIZED
+	profiler_disabled               = cudaErrorProfilerDisabled,
+	profiler_not_initialized        = cudaErrorProfilerNotInitialized,
+	profiler_already_started        = cudaErrorProfilerAlreadyStarted,
+	profiler_already_stopped        = cudaErrorProfilerAlreadyStopped,
 	launch_failure                  = cudaErrorLaunchFailure,
 	prior_launch_failure            = cudaErrorPriorLaunchFailure,
 	launch_timeout                  = cudaErrorLaunchTimeout,
@@ -55,7 +64,6 @@ enum named_t : std::underlying_type<status_t>::type {
 	invalid_filter_setting          = cudaErrorInvalidFilterSetting,
 	invalid_norm_setting            = cudaErrorInvalidNormSetting,
 	mixed_device_execution          = cudaErrorMixedDeviceExecution,
-	cuda_runtime_unloading          = cudaErrorCudartUnloading,
 	unknown                         = cudaErrorUnknown,
 	not_yet_implemented             = cudaErrorNotYetImplemented,
 	memory_value_too_large          = cudaErrorMemoryValueTooLarge,
@@ -64,7 +72,7 @@ enum named_t : std::underlying_type<status_t>::type {
 	insufficient_driver             = cudaErrorInsufficientDriver,
 	set_on_active_process           = cudaErrorSetOnActiveProcess,
 	invalid_surface                 = cudaErrorInvalidSurface,
-	no_device                       = cudaErrorNoDevice,
+	no_device                       = cudaErrorNoDevice, // == 100
 	ecc_uncorrectable               = cudaErrorECCUncorrectable,
 	shared_object_symbol_not_found  = cudaErrorSharedObjectSymbolNotFound,
 	shared_object_init_failed       = cudaErrorSharedObjectInitFailed,
@@ -76,13 +84,11 @@ enum named_t : std::underlying_type<status_t>::type {
 	invalid_kernel_image            = cudaErrorInvalidKernelImage,
 	no_kernel_image_for_device      = cudaErrorNoKernelImageForDevice,
 	incompatible_driver_context     = cudaErrorIncompatibleDriverContext,
+	invalid_context                 = CUDA_ERROR_INVALID_CONTEXT,
+	context_already_current         = CUDA_ERROR_CONTEXT_ALREADY_CURRENT,
 	peer_access_already_enabled     = cudaErrorPeerAccessAlreadyEnabled,
 	peer_access_not_enabled         = cudaErrorPeerAccessNotEnabled,
 	device_already_in_use           = cudaErrorDeviceAlreadyInUse,
-	profiler_disabled               = cudaErrorProfilerDisabled,
-	profiler_not_initialized        = cudaErrorProfilerNotInitialized,
-	profiler_already_started        = cudaErrorProfilerAlreadyStarted,
-	profiler_already_stopped        = cudaErrorProfilerAlreadyStopped,
 	assert                          = cudaErrorAssert,
 	too_many_peers                  = cudaErrorTooManyPeers,
 	host_memory_already_registered  = cudaErrorHostMemoryAlreadyRegistered,
@@ -162,7 +168,7 @@ std::string as_hex(I x)
 template <typename I, bool UpperCase = false>
 inline std::string ptr_as_hex(const I* ptr)
 {
-	return as_hex((size_t) ptr);
+	return as_hex(reinterpret_cast<uintptr_t>(ptr));
 }
 
 } // namespace detail
@@ -178,20 +184,20 @@ class runtime_error : public std::runtime_error {
 public:
 	///@cond
 	// TODO: Constructor chaining; and perhaps allow for more construction mechanisms?
-	runtime_error(cuda::status_t error_code) :
+	runtime_error(status_t error_code) :
 		std::runtime_error(describe(error_code)),
 		code_(error_code)
 	{ }
 	// I wonder if I should do this the other way around
-	runtime_error(cuda::status_t error_code, const std::string& what_arg) :
+	runtime_error(status_t error_code, const std::string& what_arg) :
 		std::runtime_error(what_arg + ": " + describe(error_code)),
 		code_(error_code)
 	{ }
 	///@endcond
 	runtime_error(cuda::status::named_t error_code) :
-		runtime_error(static_cast<cuda::status_t>(error_code)) { }
+		runtime_error(static_cast<status_t>(error_code)) { }
 	runtime_error(cuda::status::named_t error_code, const std::string& what_arg) :
-		runtime_error(static_cast<cuda::status_t>(error_code), what_arg) { }
+		runtime_error(static_cast<status_t>(error_code), what_arg) { }
 
 	/**
 	 * Obtain the CUDA status code which resulted in this error being thrown.
@@ -202,7 +208,7 @@ private:
 	status_t code_;
 };
 
-// TODO: The following could use std::optiomal arguments - which would
+// TODO: The following could use std::optional arguments - which would
 // prevent the need for dual versions of the functions - but we're
 // not writing C++17 here
 
@@ -213,9 +219,14 @@ private:
  * @param status should be @ref cuda::status::success - otherwise an exception is thrown
  * @param message An extra description message to add to the exception
  */
-inline void throw_if_error(cuda::status_t status, const std::string& message) noexcept(false)
+inline void throw_if_error(status_t status, const std::string& message) noexcept(false)
 {
 	if (is_failure(status)) { throw runtime_error(status, message); }
+}
+
+inline void throw_if_error(CUresult status, const std::string& message) noexcept(false)
+{
+	throw_if_error(static_cast<status_t>(status), message);
 }
 
 /**
@@ -224,9 +235,14 @@ inline void throw_if_error(cuda::status_t status, const std::string& message) no
  *
  * @param status should be @ref cuda::status::success - otherwise an exception is thrown
  */
-inline void throw_if_error(cuda::status_t status) noexcept(false)
+inline void throw_if_error(status_t status) noexcept(false)
 {
 	if (is_failure(status)) { throw runtime_error(status); }
+}
+
+inline void throw_if_error(CUresult status) noexcept(false)
+{
+	throw_if_error(static_cast<status_t>(status));
 }
 
 enum : bool {
@@ -237,14 +253,43 @@ enum : bool {
 namespace outstanding_error {
 
 /**
- * Reset the CUDA status to @ref cuda::status::success.
+ * Clears the current CUDA context's status and return any outstanding error.
+ *
+ * @todo Reconsider what this does w.r.t. driver calls
  */
-inline status_t clear() noexcept { return cudaGetLastError();    }
+inline status_t clear() noexcept
+{
+	constexpr const unsigned dummy_flags { 0 };
+	{
+		auto status = cuInit(dummy_flags);
+		if (status != CUDA_SUCCESS) { return static_cast<status_t>(status); }
+	}
+	return cudaGetLastError();
+}
+
+/**
+ * Get the code of the last error in the current CUDA context,
+ * without clearing it.
+ *
+ * @todo implement this?
+ *
+ */
+// inline status_t get();
 
 /**
  * Get the code of the last error in a CUDA-related action.
+ *
+ * @todo Reconsider what this does w.r.t. driver calls
  */
-inline status_t get()   noexcept { return cudaPeekAtLastError(); }
+inline status_t get() noexcept
+{
+	constexpr const unsigned dummy_flags { 0 };
+	{
+		auto status = cuInit(dummy_flags);
+		if (status != CUDA_SUCCESS) { return static_cast<status_t>(status); }
+	}
+	return cudaPeekAtLastError();
+}
 
 /**
  * @brief Does nothing (unless throwing an exception)
@@ -262,7 +307,7 @@ inline status_t get()   noexcept { return cudaPeekAtLastError(); }
  *
  */
 inline void ensure_none(
-	std::string  message,
+	const std::string&  message,
 	bool         clear_any_error = do_clear_errors) noexcept(false)
 {
 	auto last_status = clear_any_error ? clear() : get();
@@ -302,7 +347,6 @@ inline void ensure_none(bool clear_any_error = do_clear_errors) noexcept(false)
 }
 
 } // namespace outstanding_error
-
 
 } // namespace cuda
 

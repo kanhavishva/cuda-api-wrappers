@@ -5,7 +5,7 @@
  *   Error Handling
  *
  */
-#include <cuda/runtime_api.hpp>
+#include <cuda/api.hpp>
 
 #include <iostream>
 #include <string>
@@ -16,7 +16,7 @@ using std::flush;
 
 [[noreturn]] void die_(const std::string& message)
 {
-	std::cerr << message << "\n";
+	std::cerr << message << "\nFAILURE\n";
 	exit(EXIT_FAILURE);
 }
 
@@ -29,16 +29,14 @@ int main(int argc, char **argv)
 
 	try {
 		cuda::device::current::detail::set(device_count);
-		die_("An exception should have be thrown");
+		die_("An exception should have be thrown when setting the current device to one-past-the-last.");
 	}
 	catch(cuda::runtime_error& e) {
 		if (e.code() != cuda::status::invalid_device) { throw e; }
-		cout << "The exception we expected was indeed thrown." << "\n";
 	}
-
 	try {
 		cuda::outstanding_error::ensure_none();
-		die_("An exception should have be thrown");
+		die_("An exception should have be thrown when ensuring there were no outstanding errors (as we had just triggered one)");
 	}
 	catch(cuda::runtime_error&) { }
 
@@ -52,19 +50,19 @@ int main(int argc, char **argv)
 
 	try {
 		cuda::device::current::detail::set(device_count);
-		die_("An exception should have be thrown");
+		die_("An exception should have be thrown when setting the current device to one-past-the-last.");
 	}
 	catch(cuda::runtime_error&) { }
 
 	try {
 		cuda::outstanding_error::ensure_none(cuda::dont_clear_errors);
-		die_("An exception should have be thrown");
+		die_("An exception should have be thrown when setting the current device to one-past-the-last.");
 	}
 	catch(cuda::runtime_error&) { }
 
 	try {
 		cuda::outstanding_error::ensure_none(cuda::dont_clear_errors);
-		die_("An exception should have be thrown");
+		die_("An exception should have be thrown when setting the current device to one-past-the-last.");
 	}
 	catch(cuda::runtime_error&) { }
 
@@ -73,6 +71,6 @@ int main(int argc, char **argv)
 	cuda::outstanding_error::clear();
 	cuda::outstanding_error::ensure_none(); // ... and that makes them stop
 
-	cout << "SUCCESS\n";
+	std::cout << "SUCCESS\n";
 	return EXIT_SUCCESS;
 }

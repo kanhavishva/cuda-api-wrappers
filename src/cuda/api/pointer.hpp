@@ -18,9 +18,10 @@
 
 #include <cuda/api/constants.hpp>
 #include <cuda/api/error.hpp>
-#include <cuda/common/types.hpp>
+#include <cuda/api/types.hpp>
 
 #include <cuda_runtime_api.h>
+#include <cuda.h>
 
 #ifndef NDEBUG
 #include <cassert>
@@ -113,6 +114,21 @@ public: // other non-mutators
 		throw_if_error(status, "Failed obtaining attributes of pointer " + cuda::detail::ptr_as_hex(ptr_));
 		return the_attributes;
 	}
+/*
+
+	bool synchronizes_synchronous_operations() const {
+		return false;
+	}
+
+	void synchronize_synchronous_operations(bool value) const {
+		unsigned cast_value = value ? 1 : 0;
+		auto status = cuPointerSetAttribute(&cast_value, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, reinterpret_cast<CUdeviceptr>(get()));
+		throw_if_error(status,
+			value ? "Failed setting pointer to synchronize with synchronous operations" :
+				"Failed setting pointer to no longer synchronize with synchronous operations");
+	}
+
+*/
 	device_t device() const noexcept;
 
 	/**
@@ -120,14 +136,13 @@ public: // other non-mutators
 	 * CUDA ensures that, for pointers to memory not accessible on the CUDA device, `nullptr`
 	 * is returned.
 	 */
-	T* get_for_device() const { return attributes().devicePointer; }
-
+	T* get_for_device() const;
 	/**
 	 * @returns A pointer into device-accessible memory (not necessary on-device memory though).
 	 * CUDA ensures that, for pointers to memory not accessible on the CUDA device, `nullptr`
 	 * is returned.
 	 */
-	T* get_for_host() const { return attributes().hostPointer; }
+	T* get_for_host() const;
 
 	/**
 	 * @returns For a mapped-memory pointer, returns the other side of the mapping,
@@ -139,7 +154,9 @@ public: // other non-mutators
 	 * the case of a non-mapped pointer; and on the device and host pointers being
 	 * identical to ptr_ for managed-memory pointers.
 	 */
-	pointer_t other_side_of_region_pair() const {
+	pointer_t other_side_of_region_pair() const
+	{
+		// TODO: Consider using the driver for this rather than getting all attributes
 	    auto attrs = attributes();
 #ifndef NDEBUG
 	    assert(attrs.devicePointer == ptr_ or attrs.hostPointer == ptr_);

@@ -8,7 +8,9 @@
  * one kernel, wait for the other process' kernel to
  * complete execution, and inspect each other's kernel's
  * output - in an output buffer that each of them learns
- * about from the other process.
+ * about from the other process
+ *
+ * TODO: Mostly uninplaemented for now.
  *
  */
 #include <cuda/api/device.hpp>
@@ -66,7 +68,15 @@ int main(int argc, char **argv)
 			<< ptr.get_for_device() << " != " << memory_region.start();
 		die_(ss.str());
 	}
-	(ptr.get_for_host() == nullptr) or die_("Unexpected non-nullptr host-side address reported");
+	try {
+		auto host_side_ptr = ptr.get_for_host();
+		std::stringstream ss;
+		ss << "Unexpected success getting a host-side pointer for a device-only allocation; allocated pointer: "
+				<< ptr.get() << ", " << " host-side pointer: " << host_side_ptr;
+	}
+	catch(cuda::runtime_error& e) {
+		if (e.code() != cuda::status::invalid_value) { throw e; }
+	}
 
 	std::cout << "\nSUCCESS\n";
 	return EXIT_SUCCESS;

@@ -10,19 +10,9 @@
  * contact the author.
  */
 
-#include <cuda/runtime_api.hpp>
+#include "../../common.hpp"
 
 #include "ptx.cuh"
-
-#include <iostream>
-#include <memory>
-
-[[noreturn]] void die_(const std::string& message)
-{
-	std::cerr << message << "\n";
-	exit(EXIT_FAILURE);
-}
-
 
 __global__ void sequence_gpu(int *d_ptr, int length)
 {

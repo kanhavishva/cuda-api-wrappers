@@ -295,6 +295,25 @@ inline bool properties_t::usable_for_compute() const noexcept
 } // namespace device
 } // namespace cuda
 
+namespace std {
+
+  template <>
+  struct hash<cuda::device::compute_capability_t>
+  {
+    std::size_t operator()(const cuda::device::compute_capability_t& cc) const
+    {
+      using std::hash;
+
+      // Compute individual hash values for first,
+      // second and third and combine them using XOR
+      // and bit shifting:
+
+      return hash<unsigned>()(cc.major()) ^ (hash<unsigned>()(cc.minor()) << 1);
+    }
+  };
+
+} // namespace std
+
 ///@endcond
 
 #endif // CUDA_API_WRAPPERS_DETAIL_DEVICE_PROPERTIES_HPP_

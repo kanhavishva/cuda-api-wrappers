@@ -25,8 +25,10 @@
 #ifndef __CUDACC__
 #include <builtin_types.h>
 #endif
+#include <cuda.h>
 
 #include <type_traits>
+#include <utility>
 #include <cassert>
 #include <cstddef> // for std::size_t
 #include <cstdint>
@@ -46,6 +48,10 @@
 #endif
 #endif
 
+#if __cplusplus >= 202002L
+#include <span>
+#endif
+
 
 #ifdef _MSC_VER
 /*
@@ -61,6 +67,23 @@
  */
 namespace cuda {
 
+#if __cplusplus >= 202002L
+using std::span;
+#else
+template <typename T>
+// Poor man's span. TODO: Replace it with a proper span.
+struct span {
+	T* data_;
+	size_t size_;
+
+//	constexpr T* & data() const noexcept { return data_; }
+	T*& data() noexcept { return const_cast<T*&>(data_); }
+	constexpr size_t size() const noexcept { return size_; }
+//	constexpr size_t& size() noexcept { return size_; }
+};
+#endif
+
+
 /*
  * The 3 ID types - for devices, streams and events - in this file are just
  * numeric identifiers (mostly useful for breaking dependencies and for
@@ -75,9 +98,11 @@ namespace cuda {
 
 
 /**
- * Indicates either the result (success or error index) of a CUDA Runtime API call,
- * or the overall status of the Runtime API (which is typically the last triggered
- * error).
+ * Indicates either the result (success or error index) of a CUDA Runtime or Driver API call,
+ * or the overall status of the API (which is typically the last triggered error).
+ *
+ * @note cudaError_t is not technically the same type as CUresult - but they are both enums,
+ * sharing most of the defined values. See also @ref error.hpp where we unify the set of errors.
  */
 using status_t = cudaError_t;
 
@@ -92,6 +117,7 @@ using dimensionality_t = unsigned;
 namespace array {
 
 using dimension_t = size_t;
+
 /**
  * CUDA's array memory-objects are multi-dimensional; but their dimensions,
  * or extents, are not the same as @ref cuda::grid::dimensions_t ; they may be
@@ -120,19 +146,10 @@ struct dimensions_t<3> // this almost-inherits cudaExtent
 	constexpr __host__ __device__ dimensions_t(dimensions_t&& other)
 		: dimensions_t(other.width, other.height, other.depth) { }
 
-	CPP14_CONSTEXPR __host__ __device__ dimensions_t& operator=(const dimensions_t& other)
-	{
-		width = other.width; height = other.height; depth = other.depth;
-		return *this;
+	CPP14_CONSTEXPR __host__ __device__ dimensions_t& operator=(const dimensions_t& other) = default;
+	CPP14_CONSTEXPR __host__ __device__ dimensions_t& operator=(dimensions_t&& other) = default;
 
-	}
-	CPP14_CONSTEXPR __host__ __device__ dimensions_t& operator=(dimensions_t&& other)
-	{
-		width = other.width; height = other.height; depth = other.depth;
-		return *this;
-	}
-
-	constexpr __host__ __device__ operator cudaExtent(void) const
+	constexpr __host__ __device__ operator cudaExtent() const
 	{
 		return { width, height, depth };
 			// Note: We're not using make_cudaExtent here because:
@@ -325,6 +342,27 @@ using block_dimensions_t = dimensions_t;
  * spaces.
  */
 namespace memory {
+
+namespace device {
+
+/**
+ * The numeric type which can represent the range of memory addresses on a CUDA device.
+ */
+using address_t = CUdeviceptr;
+
+/**
+ * Return a pointers address as a numeric value of the type appropriate for device
+ * @param device_ptr a pointer into device memory
+ * @return a reinterpretation of @p device_ptr as a numeric address.
+ */
+inline address_t address(void* device_ptr)
+{
+    static_assert(sizeof(void*) == sizeof(address_t), "Incompatible sizes for a void pointer and memory::device::address_t");
+    return reinterpret_cast<address_t>(device_ptr);
+}
+
+} // namespace device
+
 namespace shared {
 
 /**
@@ -485,36 +523,11 @@ using pair_attribute_t   = cudaDeviceP2PAttr;
 
 } // namespace device
 
-namespace detail {
+namespace context {
 
-/**
- * @brief adapt a type to be usable as a kernel parameter.
- *
- * CUDA kernels don't accept just any parameter type a C++ function may accept.
- * Specifically: No references, arrays decay (IIANM) and functions pass by address.
- * However - not all "decaying" of `std::decay` is necessary. Such transformation
- * can be effected by this type-trait struct.
- */
-template<typename P>
-struct kernel_parameter_decay {
-private:
-    typedef typename std::remove_reference<P>::type U;
-public:
-    typedef typename std::conditional<
-        std::is_array<U>::value,
-        typename std::remove_extent<U>::type*,
-        typename std::conditional<
-            std::is_function<U>::value,
-            typename std::add_pointer<U>::type,
-            U
-        >::type
-    >::type type;
-};
+using handle_t = CUcontext;
 
-template<typename P>
-using kernel_parameter_decay_t = typename kernel_parameter_decay<P>::type;
-
-} // namespace detail
+} // namespace context
 
 /**
  * Scheduling policies the Runtime API may use when the host-side
@@ -565,6 +578,23 @@ enum host_thread_synch_scheduling_policy_t : unsigned int {
 };
 
 using native_word_t = unsigned;
+
+namespace detail {
+
+template <typename T, typename U>
+inline T identity_cast(U&& x)
+{
+	static_assert(std::is_same<
+            typename std::remove_reference<T>::type,
+            typename std::remove_reference<U>::type
+        >::value,
+        "Casting to a different type - don't use identity_cast");
+	return static_cast<T>(std::forward<U>(x));
+}
+
+} // namespace detail
+
+using uuid_t = CUuuid;
 
 /**
  * Object-code symbols

@@ -12,7 +12,7 @@
  *   cudaSetDoubleForHost
  *
  */
-#include <cuda/runtime_api.hpp>
+#include <cuda/api.hpp>
 
 #include <cuda_runtime_api.h>
 
@@ -77,7 +77,7 @@ int main(int argc, char **argv)
 
 	auto device = cuda::device::get(device_id).make_current();
 	std::cout << "Using CUDA device " << device.name() << " (having device ID " << device.id() << ")\n";
-	cuda::kernel_t kernel(device, kernel_function);
+	cuda::apriori_compiled_kernel_t kernel(device, kernel_function);
 
 	// ------------------------------------------
 	//  Attributes without a specific API call
@@ -128,6 +128,7 @@ int main(int argc, char **argv)
 		<< "Launching kernel " << kernel_name
 		<< " wrapped in a kernel_t strcture,"
 		<< " with " << num_blocks << " blocks, using cuda::launch()\n" << std::flush;
+
 
 	cuda::launch(kernel, launch_config, bar);
 	cuda::device::current::get().synchronize();
@@ -215,10 +216,11 @@ int main(int argc, char **argv)
 	}
 #endif
 
+	cuda::apriori_compiled_kernel_t cooperative_kernel(device, kernel_function, cuda::thread_blocks_may_cooperate);
 	std::cout
 		<< "Launching kernel " << kernel_name
 		<< " with " << num_blocks << " blocks, un-cooperatively, using stream.launch()\n" << std::flush;
-	stream.enqueue.kernel_launch(cuda::thread_blocks_may_not_cooperate, kernel, launch_config, bar);
+	stream.enqueue.kernel_launch(cooperative_kernel, launch_config, bar);
 	stream.synchronize();
 
 	std::cout << "\nSUCCESS\n";

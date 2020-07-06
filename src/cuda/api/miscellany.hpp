@@ -8,12 +8,29 @@
 #ifndef CUDA_API_WRAPPERS_MISCELLANY_HPP_
 #define CUDA_API_WRAPPERS_MISCELLANY_HPP_
 
-#include <cuda/api/error.hpp>
-#include <cuda/common/types.hpp>
+#include <cuda/api/types.hpp>
 
 #include <cuda_runtime_api.h>
+#include <cuda/api/error.hpp>
+
+#include <cuda.h>
+#include <ostream>
+#include <utility>
 
 namespace cuda {
+
+/**
+ * Obtains the CUDA Runtime version
+ *
+ * @note unlike {@ref maximum_supported_by_driver()}, 0 cannot be returned,
+ * as we are actually using the runtime to obtain the version, so it does
+ * have _some_ version.
+ */
+inline void initialize_driver() {
+	constexpr const unsigned dummy_flags { 0 }; // this is the only allowed value for flags
+	auto status = cuInit(dummy_flags);
+	throw_if_error(status, "Failed initializing the CUDA driver");
+}
 
 /**
  * @brief Ensures the CUDA runtime has fully initialized

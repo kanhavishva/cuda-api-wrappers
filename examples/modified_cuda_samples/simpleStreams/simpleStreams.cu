@@ -34,6 +34,7 @@
 #define EXIT_WAIVED 2
 #endif
 
+
 const char *sSDKsample = "simpleStreams";
 
 const char *sEventSyncMethod[] =
@@ -62,19 +63,14 @@ const char *sDeviceSyncMethod[] =
 // helper functions and utilities to work with CUDA
 #include "../helper_cuda.h"
 
-#include <cuda/runtime_api.hpp>
+#include <cuda/api.hpp>
 
 #ifndef WIN32
 #include <sys/mman.h> // for mmap() / munmap()
 #endif
 
-#include <cstdlib>
 
-#include <fstream>
-#include <vector>
-#include <iostream>
-#include <algorithm>
-
+#include "../../common.hpp"
 
 // Macro to aligned up to the memory size in question
 #define MEMORY_ALIGNMENT  4096
@@ -174,8 +170,28 @@ int main(int argc, char **argv)
 	}
 
 	std::cout << "\n> ";
-	chooseCudaDevice(argc, (const char **)argv);
+	// chooseCudaDevice(argc, (const char **)argv);
 	auto current_device = cuda::device::current::get();
+
+	report_current_context("After getting the current device");
+
+	// enable use of blocking sync, to reduce CPU usage
+	std::cout << "> Using CPU/GPU Device Synchronization method " << sDeviceSyncMethod[device_sync_method] << "\n";
+
+	cuda::host_thread_synch_scheduling_policy_t policy;
+	switch(device_sync_method) {
+	case 0: policy = cuda::heuristic; break;
+	case 1: policy = cuda::spin;      break;
+	case 2: policy = cuda::yield;     break;
+	case 4: policy = cuda::block;     break;
+	default: // should not be able to get here
+		exit(EXIT_FAILURE);
+	}
+	current_device.set_synch_scheduling_policy(policy);
+	std::cout << "Set synchronization method for device " << current_device << '\n';
+
+	report_current_context("After setting synch scheduling policy");
+
 
 	// Checking for compute capabilities
 	auto properties = current_device.properties();
@@ -211,6 +227,10 @@ int main(int argc, char **argv)
 	scale_factor = std::max((32.0f / faux_cores_overall), 1.0f);
 	n = (int)rint((float)n / scale_factor);
 
+	report_current_context("before printing compute capability");
+
+
+
 	std::cout << "> CUDA Capable: SM " << compute_capability.major() << "." << compute_capability.minor() << " hardware\n";
 	std::cout
 		<< "> " << properties.multiProcessorCount << " Multiprocessor(s)"
@@ -220,19 +240,6 @@ int main(int argc, char **argv)
 	std::cout << "> scale_factor = " << 1.0f/scale_factor << "\n";
 	std::cout << "> array_size   = " << n << "\n\n";
 
-	// enable use of blocking sync, to reduce CPU usage
-	std::cout << "> Using CPU/GPU Device Synchronization method " << sDeviceSyncMethod[device_sync_method] << "\n";
-
-	cuda::host_thread_synch_scheduling_policy_t policy;
-	switch(device_sync_method) {
-	case 0: policy = cuda::heuristic; break;
-	case 1: policy = cuda::spin;      break;
-	case 2: policy = cuda::yield;     break;
-	case 4: policy = cuda::block;     break;
-	default: // should not be able to get here
-		exit(EXIT_FAILURE);
-	}
-	current_device.set_synch_scheduling_policy(policy);
 	current_device.enable_mapping_host_memory();
 
 	// allocate host memory

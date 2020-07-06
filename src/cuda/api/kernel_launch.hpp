@@ -42,9 +42,7 @@
 #ifndef CUDA_API_WRAPPERS_KERNEL_LAUNCH_CUH_
 #define CUDA_API_WRAPPERS_KERNEL_LAUNCH_CUH_
 
-#include <cuda/api/constants.hpp>
 #include <cuda/api/kernel.hpp>
-#include <cuda/common/types.hpp>
 
 #if (__CUDACC_VER_MAJOR__ >= 9)
 #include <cooperative_groups.h>
@@ -55,7 +53,9 @@
 
 namespace cuda {
 
+///@cond
 class stream_t;
+///@endcond
 
 /**
  * A named constructor idiom for {@ref grid::dimensions_t},
@@ -70,6 +70,39 @@ constexpr grid::dimensions_t single_block() { return 1; }
 constexpr grid::block_dimensions_t single_thread_per_block() { return 1; }
 
 namespace detail {
+
+template<bool...> struct bool_pack;
+
+template<bool... bs>
+using all_true = std::is_same<bool_pack<bs..., true>, bool_pack<true, bs...>>;
+
+/**
+ * @brief adapt a type to be usable as a kernel parameter.
+ *
+ * CUDA kernels don't accept just any parameter type a C++ function may accept.
+ * Specifically: No references, arrays decay (IIANM) and functions pass by address.
+ * However - not all "decaying" of `std::decay` is necessary. Such transformation
+ * can be effected by this type-trait struct.
+ */
+template<typename P>
+struct kernel_parameter_decay {
+private:
+    typedef typename std::remove_reference<P>::type U;
+public:
+    typedef typename std::conditional<
+        std::is_array<U>::value,
+        typename std::remove_extent<U>::type*,
+        typename std::conditional<
+            std::is_function<U>::value,
+            typename std::add_pointer<U>::type,
+            U
+        >::type
+    >::type type;
+};
+
+template<typename P>
+using kernel_parameter_decay_t = typename kernel_parameter_decay<P>::type;
+
 
 template<typename Kernel>
 bool intrinsic_block_cooperation_value(const Kernel&)
@@ -115,6 +148,11 @@ inline void enqueue_launch(
 	    (is_function_ptr<RawKernel>::value),
 	    "Only a bona fide function can be a CUDA kernel and be launched; "
 	    "you were attempting to enqueue a launch of something other than a function");
+	static_assert(
+		cuda::detail::all_true<
+			std::is_trivially_copyable<typename std::decay<KernelParameters>::type>::value...
+		>::value,
+		"All kernel parameter types must be of a trivially copyable (decayed) type." );
 
 	if (thread_block_cooperation == thread_blocks_may_not_cooperate) {
 		// regular plain vanilla launch
@@ -161,6 +199,16 @@ inline void enqueue_launch(
 }
 #endif
 
+// For partial template specialization on WrappedKernel...
+template<typename Kernel, typename... KernelParameters>
+struct enqueue_launch_helper {
+	void operator()(
+		Kernel                  kernel_function,
+		const stream_t &        stream,
+		launch_configuration_t  launch_configuration,
+		KernelParameters &&...  parameters);
+};
+
 
 } // namespace detail
 
@@ -187,7 +235,7 @@ inline void enqueue_launch(
  * requirement of the kernel function rather than merely an arbitrary choice.
  * @param kernel_function the kernel to apply. Pass it just as-it-is, as though it were any other function. Note:
  * If the kernel is templated, you must pass it fully-instantiated. Alternatively, you can pass a
- * @ref kernel_t wrapping the raw pointer to the function.
+ * @ref kernel_t subclass wrapping the raw pointer to the function.
  * @param stream the CUDA hardware command queue on which to place the command to launch the kernel (affects
  * the scheduling of the launch and the execution)
  * @param launch_configuration a kernel is launched on a grid of blocks of thread, and with an allowance of
@@ -200,35 +248,36 @@ inline void enqueue_launch(
  * must match the kernel function's needs, with the kernel_t wrapper is assumed to indicate. Behavior on mismatch
  * is undefined.
  */
-template<typename Kernel, typename... KernelParameters>
+template<typename WrappedKernel, typename... KernelParameters>
 void enqueue_launch(
-	bool                    thread_block_cooperation,
-	Kernel                  kernel_function,
-	const stream_t&         stream,
-	launch_configuration_t  launch_configuration,
-	KernelParameters&&...   parameters);
-
-/**
- * A variant of @ref enqueue_launch which uses the default of no cooperation
- * between thread blocks.
- */
-template<typename Kernel, typename... KernelParameters>
-inline void enqueue_launch(
-	Kernel                  kernel_function,
+	WrappedKernel           kernel_function,
 	const stream_t&         stream,
 	launch_configuration_t  launch_configuration,
 	KernelParameters&&...   parameters)
 {
-	enqueue_launch(
-		detail::intrinsic_block_cooperation_value(kernel_function),
-		kernel_function,
+	static_assert(
+		detail::all_true<
+			std::is_trivially_copyable<detail::kernel_parameter_decay_t<KernelParameters>>::value...
+		>::value,
+		"All kernel parameter types must be of a trivially copyable (decayed) type." );
+
+	detail::enqueue_launch_helper<WrappedKernel, KernelParameters...>{}(
+		std::forward<WrappedKernel>(kernel_function),
 		stream,
 		launch_configuration,
 		std::forward<KernelParameters>(parameters)...);
 }
 
+template<typename RawKernel, typename... KernelParameters>
+void enqueue_launch(
+	bool                    thread_block_cooperation,
+	RawKernel               kernel_function,
+	const stream_t&         stream,
+	launch_configuration_t  launch_configuration,
+	KernelParameters&&...   parameters);
+
 /**
- * Variant of @ref enqueue_launch for use with the default stream on the current device.
+ * Variant of @ref enqueue_launch for use with the default stream in the current context.
  *
  * @note This isn't called `enqueue` since the default stream is synchronous.
  */

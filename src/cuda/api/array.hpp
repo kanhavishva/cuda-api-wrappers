@@ -4,6 +4,9 @@
  * @brief Contains a proxy class for CUDA arrays - GPU memory
  * with 2-D or 3-D locality and hardware support for interpolated value
  * retrieval); see also @ref texture_view.hpp .
+ *
+ * @note Not all kinds of arrays are supported: Only non-layered, non-cubemap
+ * arrays of 2 or 3 dimensions.
  */
 #pragma once
 #ifndef CUDA_API_WRAPPERS_ARRAY_HPP_
@@ -13,6 +16,7 @@
 #include <cuda/api/error.hpp>
 
 #include <cuda_runtime.h>
+#include <cuda.h>
 
 namespace cuda {
 
@@ -29,6 +33,8 @@ cudaArray* allocate_on_current_device(array::dimensions_t<3> dimensions)
 	cudaExtent extent = dimensions;
 	cudaArray* raw_cuda_array;
 	auto status = cudaMalloc3DArray(&raw_cuda_array, &channel_descriptor, extent);
+	    // Corresponds to the Driver API's cuArray3DCreate, although the layout
+	    // of the parameters is somewhat different
 	throw_if_error(status, "failed allocating 3D CUDA array");
 	return raw_cuda_array;
 }
@@ -77,6 +83,13 @@ class array_t {
 	static_assert(NumDimensions == 2 or NumDimensions == 3, "CUDA only supports 2D and 3D arrays");
 
 public:
+    using descriptor_type =
+        typename std::conditional<
+            NumDimensions == 2,
+            CUDA_ARRAY_DESCRIPTOR,
+            CUDA_ARRAY3D_DESCRIPTOR
+        >::type;
+
 	/**
 	 * Constructs a CUDA array wrapper from the raw type used by the CUDA
 	 * Runtime API - and takes ownership of the array
@@ -112,6 +125,17 @@ public:
 	array::dimensions_t<NumDimensions> dimensions() const noexcept { return dimensions_; }
 	std::size_t size() const noexcept { return dimensions().size(); }
 	std::size_t size_bytes() const noexcept { return size() * sizeof(T); }
+    descriptor_type descriptor() const
+	{
+		descriptor_type result;
+		CUresult status = (NumDimensions == 2) ?
+			cuArrayGetDescriptor(&result, raw_array_) :
+			cuArray3DGetDescriptor(&result, raw_array_);
+		throw_if_error(status,
+			std::string("Failed obtaining the descriptor of the CUDA ") +
+			(NumDimensions == 2 ? "2":"3") + "D array at " + detail::ptr_as_hex(raw_array_));
+
+	}
 
 protected:
 	array::dimensions_t<NumDimensions> dimensions_;
