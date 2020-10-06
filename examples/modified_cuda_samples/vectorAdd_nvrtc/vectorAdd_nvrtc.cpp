@@ -1,26 +1,38 @@
 /**
- * Derived from the nVIDIA CUDA 8.0 samples by
+ * Derived from the nVIDIA CUDA 10.0 samples by
  *
- *   Eyal Rozenberg
+ *   Eyal Rozenberg <eyalroz@technion.ac.il>
  *
  * The derivation is specifically permitted in the nVIDIA CUDA Samples EULA
  * and the deriver is the owner of this code according to the EULA.
  *
  * Use this reasonably. If you want to discuss licensing formalities, please
  * contact the author.
+ *
+ * This version differs from the other vectorAdd example in that managed memory is
+ * used instead of regular host and device memory.
  */
 
-#include <cuda/api.hpp>
+#include "../../common.hpp"
 
+#include <cuda/nvrtc.hpp>
 #include <iostream>
-#include <memory>
-#include <algorithm>
+#include <cmath>
+
+const char* vectorAdd_source = R"(
+
+/**
+ * Computes the vector addition of A and B into C. The 3 vectors have the same
+ * number of elements numElements.
+ */
 
 __global__ void vectorAdd(const float *A, const float *B, float *C, int numElements)
 {
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	if (i < numElements) { C[i] = A[i] + B[i]; }
 }
+
+)";
 
 int main(void)
 {
@@ -31,7 +43,26 @@ int main(void)
 
 	int numElements = 50000;
 	size_t size = numElements * sizeof(float);
+	auto kernel_name = "vectorAdd";
+
 	std::cout << "[Vector addition of " << numElements << " elements]\n";
+	auto context = cuda::device::current::get().primary_context();
+		// Note: If you want to create the kernel in the primary context,
+		// you have to ensure you keep the reference count to it above 0,
+		// or you'll get errors when trying to use it. Best-case scenario,
+		// it'll be an "context destroyed" error, but it could be a bunch of
+		// other errors, including rather opaque ones from NVRTC.
+		//
+		// It's easier with contexts you create yourself, because then you
+		// have better visibility for their lifetimes.
+
+	auto program = cuda::rtc::program::create(kernel_name, vectorAdd_source);
+	program.register_name_for_lookup(kernel_name);
+	program.compile();
+	auto mangled_kernel_name = program.mangled_form_of(kernel_name);
+
+	auto module = cuda::module::create(context, program);
+	auto vectorAdd = module.get_kernel(mangled_kernel_name);
 
 	// If we could rely on C++14, we would  use std::make_unique
 	auto h_A = std::unique_ptr<float>(new float[numElements]);
@@ -67,13 +98,14 @@ int main(void)
 
 	// Verify that the result vector is correct
 	for (int i = 0; i < numElements; ++i) {
-		if (fabs(h_A.get()[i] + h_B.get()[i] - h_C.get()[i]) > 1e-5)  {
+		if (std::fabs(h_A.get()[i] + h_B.get()[i] - h_C.get()[i]) > 1e-5)  {
 			std::cerr << "Result verification failed at element " << i << "\n";
 			exit(EXIT_FAILURE);
 		}
 	}
 
-	std::cout << "Test PASSED\n";
-	std::cout << "SUCCESS\n";
+    std::cout << "Test PASSED\n";
+    std::cout << "SUCCESS\n";
 }
+
 

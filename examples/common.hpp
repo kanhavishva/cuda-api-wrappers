@@ -6,6 +6,10 @@
 #ifndef EXAMPLES_COMMON_HPP_
 #define EXAMPLES_COMMON_HPP_
 
+#include <string>
+
+void report_current_context(const std::string& prefix);
+
 #include <cuda/api.hpp>
 
 #include <cstdio>
@@ -13,12 +17,12 @@
 #include <fstream>
 #include <cmath>
 #include <cstring>
-#include <string>
 #include <system_error>
 #include <memory>
 #include <cstdlib>
 #include <vector>
 #include <algorithm>
+#include <string>
 
 const char* cache_preference_name(cuda::multiprocessor_cache_preference_t pref)
 {
