@@ -20,6 +20,7 @@ matrix:
       - CUDA_APT=10-1
       - CUDA_SHORT=10.1
       - UBUNTU_VERSION=ubuntu1804
+      - CUDAARCHS="52;53;60;61;62;70;72;75"
       dist: bionic
     - name: CUDA 10.2
       env:
@@ -27,23 +28,37 @@ matrix:
       - CUDA_APT=10-2
       - CUDA_SHORT=10.2
       - UBUNTU_VERSION=ubuntu1804
+      - CUDAARCHS="52;53;60;61;62;70;72;75"
       dist: bionic
 
 before_install:
+  - wget https://developer.download.nvidia.com/compute/cuda/repos/${UBUNTU_VERSION}/x86_64/7fa2af80.pub
+  - sudo apt-key add 7fa2af80.pub
   - INSTALLER=cuda-repo-${UBUNTU_VERSION}_${CUDA}_amd64.deb
   - wget http://developer.download.nvidia.com/compute/cuda/repos/${UBUNTU_VERSION}/x86_64/${INSTALLER}
   - sudo dpkg -i ${INSTALLER}
-  - wget https://developer.download.nvidia.com/compute/cuda/repos/${UBUNTU_VERSION}/x86_64/7fa2af80.pub
-  - sudo apt-key add 7fa2af80.pub
   - sudo apt update -qq
   - sudo apt install -y cuda-core-${CUDA_APT} cuda-cudart-dev-${CUDA_APT} cuda-nvtx-${CUDA_APT}
   - sudo apt clean
   - CUDA_HOME=/usr/local/cuda-${CUDA_SHORT}
   - LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
   - PATH=${CUDA_HOME}/bin:${PATH}
-  
+
+install:
+  - CMAKE_ARCHIVE_FILE_BASENAME="cmake-3.17.5-Linux-x86_64"
+  - CMAKE_ARCHIVE_FILENAME="${CMAKE_ARCHIVE_FILE_BASENAME}.tar.gz"
+  - echo "c240abaaa4df5a7441915b3f6ecd636b  ${CMAKE_ARCHIVE_FILENAME}" > cmake_md5.txt
+  - travis_retry wget --no-check-certificate https://cmake.org/files/v3.17/${CMAKE_ARCHIVE_FILENAME}
+  - md5sum -c cmake_md5.txt
+  - export DEPS_DIR="$(pwd)/travis-deps/"
+  - mkdir -p "${DEPS_DIR}"
+  - tar xvf ${CMAKE_ARCHIVE_FILENAME} -C "${DEPS_DIR}" > /dev/null
+  - PATH="${DEPS_DIR}/${CMAKE_ARCHIVE_FILE_BASENAME}/bin:$PATH"
+
+
 before_script:
-    - mkdir build; cd build; cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON ..
+  - mkdir build
+  - cd build; cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON ..
 
 script: 
-    - VERBOSE=1 make
+  - VERBOSE=1 make
