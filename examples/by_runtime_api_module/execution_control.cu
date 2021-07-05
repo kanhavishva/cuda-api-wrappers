@@ -16,9 +16,17 @@
 
 #include <cuda_runtime_api.h>
 
-#if __CUDACC_VER_MAJOR__ >= 9
+// Note: We only test cooperative groups functionality with CUDA 11, despite
+// their being supported in CUDA 9 already, due to weird linking issues with NVCC:
+// It fails to resolve the `cudaCGGetIntrinsicHandle` and other symbols, despite
+// the appropriate link flags
+#if __CUDACC_VER_MAJOR__ >= 11
+#define TEST_COOPERATIVE_GROUPS 1
 #include <cooperative_groups.h>
+#else
+#define TEST_COOPERATIVE_GROUPS 0
 #endif
+
 
 #include <iostream>
 #include <string>
@@ -37,7 +45,7 @@ __global__ void foo(int bar)
 	}
 }
 
-#if __CUDACC_VER_MAJOR__ >= 9
+#if TEST_COOPERATIVE_GROUPS
 __global__ void grid_cooperating_foo(int bar)
 {
 #ifdef _CG_HAS_GRID_GROUP
@@ -153,7 +161,7 @@ int main(int argc, char **argv)
 	stream.enqueue.kernel_launch(kernel, launch_config, bar);
 	stream.synchronize();
 
-#if __CUDACC_VER_MAJOR__ >= 9
+#if TEST_COOPERATIVE_GROUPS
 	try {
 		auto kernel_function = grid_cooperating_foo;
 		auto kernel_name = "grid_cooperating_foo";
@@ -163,7 +171,7 @@ int main(int argc, char **argv)
 		// And finally, some "cooperative" vs ""uncooperative"  kernel launches:
 
 		auto can_launch_cooperatively =
-#if __CUDACC_VER_MAJOR__ >= 9
+#if TEST_COOPERATIVE_GROUPS
 			(cuda::device::current::get().get_attribute(cudaDevAttrCooperativeLaunch) > 0);
 #else
 			false; // This is not strictly true, since the device might support it, but
@@ -207,7 +215,7 @@ int main(int argc, char **argv)
 		}
 
 	}
-#if __CUDACC_VER_MAJOR__ >= 9
+#if TEST_COOPERATIVE_GROUPS
 	catch(cuda::runtime_error& e) {
 		if (not (e.code() == cuda::status::not_supported)) {
 			throw e;

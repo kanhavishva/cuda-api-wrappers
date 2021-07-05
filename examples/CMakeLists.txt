@@ -70,10 +70,9 @@ add_executable(io_compute_overlap_with_streams other/io_compute_overlap_with_str
 add_executable(inclusion_in_two_translation_units other/inclusion_in_two_translation_units/main.cpp other/inclusion_in_two_translation_units/second_tu.cpp )
 
 if(NOT "${CMAKE_CUDA_COMPILER_ID}" STREQUAL "Clang")
-	# A weird NVCC-only linking issue
-	set_target_properties(execution_control PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 	# __nv_tex_surf_handler not yet implemented in Clang (as of 11.0)
 	# https://reviews.llvm.org/D76365
 	add_executable(array_management other/array_management.cu)
 endif()
+
